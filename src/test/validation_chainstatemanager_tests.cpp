@@ -200,7 +200,7 @@ CreateAndActivateUTXOSnapshot(NodeContext& node, const fs::path root, F malleati
 }
 
 //! Test basic snapshot activation.
-BOOST_FIXTURE_TEST_CASE(chainstatemanager_activate_snapshot, TestChain100DeterministicSetup)
+BOOST_FIXTURE_TEST_CASE(chainstatemanager_activate_snapshot, TestChain100Setup)
 {
     ChainstateManager& chainman = *Assert(m_node.chainman);
 
@@ -233,6 +233,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_activate_snapshot, TestChain100Determi
 
     // Mine 10 more blocks, putting at us height 110 where a valid assumeutxo value can
     // be found.
+    constexpr int snapshot_height = 110;
     mineBlocks(10);
     initial_size += 10;
     initial_total_coins += 10;
@@ -259,6 +260,11 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_activate_snapshot, TestChain100Determi
             // Coins count is smaller than coins in file
             metadata.m_coins_count -= 1;
     }));
+    BOOST_REQUIRE(!CreateAndActivateUTXOSnapshot(
+        m_node, m_path_root, [](CAutoFile& auto_infile, SnapshotMetadata& metadata) {
+            // Wrong hash
+            metadata.m_base_blockhash = uint256::ONE;
+    }));
 
     BOOST_REQUIRE(CreateAndActivateUTXOSnapshot(m_node, m_path_root));
 
@@ -267,6 +273,11 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_activate_snapshot, TestChain100Determi
     BOOST_CHECK_EQUAL(
         chainman.ActiveChainstate().m_from_snapshot_blockhash,
         *chainman.SnapshotBlockhash());
+
+    const AssumeutxoData& au_data = *ExpectedAssumeutxo(snapshot_height, ::Params());
+    const CBlockIndex* tip = chainman.ActiveTip();
+
+    BOOST_CHECK_EQUAL(tip->nChainTx, au_data.nChainTx);
 
     // To be checked against later when we try loading a subsequent snapshot.
     uint256 loaded_snapshot_blockhash{*chainman.SnapshotBlockhash()};
