@@ -454,12 +454,20 @@ RPCConsole::RPCConsole(interfaces::Node& node, const PlatformStyle *_platformSty
 {
     ui->setupUi(this);
     QSettings settings;
-    if (!restoreGeometry(settings.value("RPCConsoleWindowGeometry").toByteArray())) {
-        // Restore failed (perhaps missing setting), center the window
-        move(QGuiApplication::primaryScreen()->availableGeometry().center() - frameGeometry().center());
+#ifdef ENABLE_WALLET
+    if (WalletModel::isWalletEnabled()) {
+        // RPCConsole widget is a window.
+        if (!restoreGeometry(settings.value("RPCConsoleWindowGeometry").toByteArray())) {
+            // Restore failed (perhaps missing setting), center the window
+            move(QGuiApplication::primaryScreen()->availableGeometry().center() - frameGeometry().center());
+        }
+        ui->splitter->restoreState(settings.value("RPCConsoleWindowPeersTabSplitterSizes").toByteArray());
+    } else
+#endif // ENABLE_WALLET
+    {
+        // RPCConsole is a child widget.
+        ui->splitter->restoreState(settings.value("RPCConsoleWidgetPeersTabSplitterSizes").toByteArray());
     }
-
-    ui->splitter->restoreState(settings.value("PeersTabSplitterSizes").toByteArray());
 
     constexpr QChar nonbreaking_hyphen(8209);
     const std::vector<QString> CONNECTION_TYPE_DOC{
@@ -487,15 +495,25 @@ RPCConsole::RPCConsole(interfaces::Node& node, const PlatformStyle *_platformSty
         ui->openDebugLogfileButton->setIcon(platformStyle->SingleColorIcon(":/icons/export"));
     }
     ui->clearButton->setIcon(platformStyle->SingleColorIcon(":/icons/remove"));
+
     ui->fontBiggerButton->setIcon(platformStyle->SingleColorIcon(":/icons/fontbigger"));
+    //: Main shortcut to increase the RPC console font size.
+    ui->fontBiggerButton->setShortcut(tr("Ctrl++"));
+    //: Secondary shortcut to increase the RPC console font size.
+    GUIUtil::AddButtonShortcut(ui->fontBiggerButton, tr("Ctrl+="));
+
     ui->fontSmallerButton->setIcon(platformStyle->SingleColorIcon(":/icons/fontsmaller"));
+    //: Main shortcut to decrease the RPC console font size.
+    ui->fontSmallerButton->setShortcut(tr("Ctrl+-"));
+    //: Secondary shortcut to decrease the RPC console font size.
+    GUIUtil::AddButtonShortcut(ui->fontSmallerButton, tr("Ctrl+_"));
 
     // Install event filter for up and down arrow
     ui->lineEdit->installEventFilter(this);
     ui->lineEdit->setMaxLength(16 * 1024 * 1024);
     ui->messagesWidget->installEventFilter(this);
 
-    connect(ui->clearButton, &QPushButton::clicked, this, &RPCConsole::clear);
+    connect(ui->clearButton, &QPushButton::clicked, [this] { clear(); });
     connect(ui->fontBiggerButton, &QPushButton::clicked, this, &RPCConsole::fontBigger);
     connect(ui->fontSmallerButton, &QPushButton::clicked, this, &RPCConsole::fontSmaller);
     connect(ui->btnClearTrafficGraph, &QPushButton::clicked, ui->trafficGraph, &TrafficGraphWidget::clear);
@@ -522,8 +540,18 @@ RPCConsole::RPCConsole(interfaces::Node& node, const PlatformStyle *_platformSty
 RPCConsole::~RPCConsole()
 {
     QSettings settings;
-    settings.setValue("RPCConsoleWindowGeometry", saveGeometry());
-    settings.setValue("PeersTabSplitterSizes", ui->splitter->saveState());
+#ifdef ENABLE_WALLET
+    if (WalletModel::isWalletEnabled()) {
+        // RPCConsole widget is a window.
+        settings.setValue("RPCConsoleWindowGeometry", saveGeometry());
+        settings.setValue("RPCConsoleWindowPeersTabSplitterSizes", ui->splitter->saveState());
+    } else
+#endif // ENABLE_WALLET
+    {
+        // RPCConsole is a child widget.
+        settings.setValue("RPCConsoleWidgetPeersTabSplitterSizes", ui->splitter->saveState());
+    }
+
     m_node.rpcUnsetTimerInterface(rpcTimerInterface);
     delete rpcTimerInterface;
     delete ui;
@@ -753,20 +781,15 @@ void RPCConsole::setFontSize(int newSize)
 
     // clear console (reset icon sizes, default stylesheet) and re-add the content
     float oldPosFactor = 1.0 / ui->messagesWidget->verticalScrollBar()->maximum() * ui->messagesWidget->verticalScrollBar()->value();
-    clear(false);
+    clear(/* keep_prompt */ true);
     ui->messagesWidget->setHtml(str);
     ui->messagesWidget->verticalScrollBar()->setValue(oldPosFactor * ui->messagesWidget->verticalScrollBar()->maximum());
 }
 
-void RPCConsole::clear(bool clearHistory)
+void RPCConsole::clear(bool keep_prompt)
 {
     ui->messagesWidget->clear();
-    if(clearHistory)
-    {
-        history.clear();
-        historyPtr = 0;
-    }
-    ui->lineEdit->clear();
+    if (!keep_prompt) ui->lineEdit->clear();
     ui->lineEdit->setFocus();
 
     // Add smoothly scaled icon images.
@@ -793,20 +816,23 @@ void RPCConsole::clear(bool clearHistory)
             ).arg(fixedFontInfo.family(), QString("%1pt").arg(consoleFontSize))
         );
 
-#ifdef Q_OS_MAC
-    QString clsKey = "(⌘)-L";
-#else
-    QString clsKey = "Ctrl-L";
-#endif
-
-    message(CMD_REPLY, (tr("Welcome to the %1 RPC console.").arg(PACKAGE_NAME) + "<br>" +
-                        tr("Use up and down arrows to navigate history, and %1 to clear screen.").arg("<b>"+clsKey+"</b>") + "<br>" +
-                        tr("Type %1 for an overview of available commands.").arg("<b>help</b>") + "<br>" +
-                        tr("For more information on using this console type %1.").arg("<b>help-console</b>") +
-                        "<br><span class=\"secwarning\"><br>" +
-                        tr("WARNING: Scammers have been active, telling users to type commands here, stealing their wallet contents. Do not use this console without fully understanding the ramifications of a command.") +
-                        "</span>"),
-                        true);
+    message(CMD_REPLY,
+            tr("Welcome to the %1 RPC console.").arg(PACKAGE_NAME) +
+                "<br>" +
+                tr("Use up and down arrows to navigate history, and %1 to clear screen.")
+                    .arg("<b>" + ui->clearButton->shortcut().toString(QKeySequence::NativeText) + "</b>") +
+                "<br>" +
+                tr("Use %1 and %2 to increase or decrease the font size.")
+                    .arg("<b>" + ui->fontBiggerButton->shortcut().toString(QKeySequence::NativeText) + "</b>")
+                    .arg("<b>" + ui->fontSmallerButton->shortcut().toString(QKeySequence::NativeText) + "</b>") +
+                "<br>" +
+                tr("Type %1 for an overview of available commands.").arg("<b>help</b>") +
+                "<br>" +
+                tr("For more information on using this console type %1.").arg("<b>help-console</b>") +
+                "<br><span class=\"secwarning\"><br>" +
+                tr("WARNING: Scammers have been active, telling users to type commands here, stealing their wallet contents. Do not use this console without fully understanding the ramifications of a command.") +
+                "</span>",
+            true);
 }
 
 void RPCConsole::keyPressEvent(QKeyEvent *event)
@@ -959,7 +985,7 @@ void RPCConsole::startExecutor()
     executor->moveToThread(&thread);
 
     // Replies from executor object must go to this object
-    connect(executor, &RPCExecutor::reply, this, static_cast<void (RPCConsole::*)(int, const QString&)>(&RPCConsole::message));
+    connect(executor, &RPCExecutor::reply, this, qOverload<int, const QString&>(&RPCConsole::message));
 
     // Requests from this object must go to executor
     connect(this, &RPCConsole::cmdRequest, executor, &RPCExecutor::request);
@@ -1049,7 +1075,7 @@ void RPCConsole::updateDetailWidget()
     ui->peerSubversion->setText(QString::fromStdString(stats->nodeStats.cleanSubVer));
     ui->peerConnectionType->setText(GUIUtil::ConnectionTypeToQString(stats->nodeStats.m_conn_type, /* prepend_direction */ true));
     ui->peerNetwork->setText(GUIUtil::NetworkToQString(stats->nodeStats.m_network));
-    if (stats->nodeStats.m_permissionFlags == PF_NONE) {
+    if (stats->nodeStats.m_permissionFlags == NetPermissionFlags::None) {
         ui->peerPermissions->setText(ts.na);
     } else {
         QStringList permissions;
